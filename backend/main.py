@@ -15,6 +15,24 @@ DB_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "issues.db"))
 
 VALID_PRIORITIES = {"Low", "Medium", "High"}
 VALID_STATUSES = {"Open", "In Progress", "Resolved"}
+ENGINEERS = ("Alex Morgan", "Sam Patel", "Jordan Lee")
+
+
+def normalize_engineer(value: Optional[str]) -> Optional[str]:
+    value = value.strip() if value is not None else None
+    if not value:
+        return None
+    if value not in ENGINEERS:
+        raise ValueError("Select an engineer from the available engineers")
+    return value
+
+
+def validate_resolution(issue_status: str, engineer: Optional[str]):
+    if issue_status == "Resolved" and not engineer:
+        raise HTTPException(
+            status_code=422,
+            detail="Select an Assigned Engineer before marking an issue Resolved",
+        )
 
 
 def get_db():
@@ -23,8 +41,9 @@ def get_db():
     return conn
 
 
-def init_db(db_path: str = DB_PATH):
-    """Create the issues table automatically if it does not exist."""
+def init_db(db_path: Optional[str] = None):
+    """Create the table and add assignment to existing databases without losing records."""
+    db_path = db_path or DB_PATH
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -36,10 +55,14 @@ def init_db(db_path: str = DB_PATH):
                 description TEXT NOT NULL,
                 priority TEXT NOT NULL,
                 status TEXT NOT NULL,
-                reported_at TEXT NOT NULL
+                reported_at TEXT NOT NULL,
+                assigned_engineer TEXT
             );
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(issues)")}
+        if "assigned_engineer" not in columns:
+            conn.execute("ALTER TABLE issues ADD COLUMN assigned_engineer TEXT")
         conn.commit()
 
 
@@ -81,6 +104,12 @@ class IssueCreate(BaseModel):
     description: str
     priority: str = "Medium"
     status: str = "Open"
+    assigned_engineer: Optional[str] = None
+
+    @field_validator("assigned_engineer")
+    @classmethod
+    def validate_engineer(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_engineer(value)
 
     @field_validator("client_name", "title", "description")
     @classmethod
@@ -114,6 +143,12 @@ class IssueUpdate(BaseModel):
     description: Optional[str] = None
     priority: Optional[str] = None
     status: Optional[str] = None
+    assigned_engineer: Optional[str] = None
+
+    @field_validator("assigned_engineer")
+    @classmethod
+    def validate_engineer(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_engineer(value)
 
     @field_validator("client_name", "title", "description")
     @classmethod
@@ -155,6 +190,13 @@ class IssueResponse(BaseModel):
     priority: str
     status: str
     reported_at: str
+    assigned_engineer: Optional[str] = None
+
+
+@app.get("/engineers", response_model=List[str])
+def list_engineers():
+    """Fictional engineer choices shared by the API and frontend."""
+    return list(ENGINEERS)
 
 
 @app.get("/")
@@ -174,7 +216,7 @@ def list_issues():
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, client_name, title, description, priority, status, reported_at
+            SELECT id, client_name, title, description, priority, status, reported_at, assigned_engineer
             FROM issues
             ORDER BY id ASC
             """
@@ -193,7 +235,7 @@ def get_issue(id: int):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, client_name, title, description, priority, status, reported_at
+            SELECT id, client_name, title, description, priority, status, reported_at, assigned_engineer
             FROM issues
             WHERE id = ?
             """,
@@ -213,14 +255,15 @@ def get_issue(id: int):
 @app.post("/issues", response_model=IssueResponse, status_code=status.HTTP_201_CREATED)
 def create_issue(issue: IssueCreate):
     """Create a new issue with auto-generated ID and timezone-aware UTC reported_at timestamp."""
+    validate_resolution(issue.status, issue.assigned_engineer)
     reported_at = get_current_utc_timestamp()
     conn = get_db()
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO issues (client_name, title, description, priority, status, reported_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO issues (client_name, title, description, priority, status, reported_at, assigned_engineer)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 issue.client_name,
@@ -229,6 +272,7 @@ def create_issue(issue: IssueCreate):
                 issue.priority,
                 issue.status,
                 reported_at,
+                issue.assigned_engineer,
             ),
         )
         conn.commit()
@@ -241,6 +285,7 @@ def create_issue(issue: IssueCreate):
             "priority": issue.priority,
             "status": issue.status,
             "reported_at": reported_at,
+            "assigned_engineer": issue.assigned_engineer,
         }
     finally:
         conn.close()
@@ -257,7 +302,7 @@ def update_issue(id: int, issue: IssueUpdate):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, client_name, title, description, priority, status, reported_at
+            SELECT id, client_name, title, description, priority, status, reported_at, assigned_engineer
             FROM issues
             WHERE id = ?
             """,
@@ -286,11 +331,19 @@ def update_issue(id: int, issue: IssueUpdate):
         updated_status = (
             issue.status if issue.status is not None else existing["status"]
         )
+        updated_engineer = (
+            issue.assigned_engineer
+            if "assigned_engineer" in issue.model_fields_set
+            else existing["assigned_engineer"]
+        )
+        # Validate the merged record: omitted assignment keeps its existing value,
+        # while explicit null clears it only when the result is not Resolved.
+        validate_resolution(updated_status, updated_engineer)
 
         cursor.execute(
             """
             UPDATE issues
-            SET client_name = ?, title = ?, description = ?, priority = ?, status = ?
+            SET client_name = ?, title = ?, description = ?, priority = ?, status = ?, assigned_engineer = ?
             WHERE id = ?
             """,
             (
@@ -299,6 +352,7 @@ def update_issue(id: int, issue: IssueUpdate):
                 updated_description,
                 updated_priority,
                 updated_status,
+                updated_engineer,
                 id,
             ),
         )
@@ -312,6 +366,7 @@ def update_issue(id: int, issue: IssueUpdate):
             "priority": updated_priority,
             "status": updated_status,
             "reported_at": existing["reported_at"],
+            "assigned_engineer": updated_engineer,
         }
     finally:
         conn.close()

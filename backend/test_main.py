@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 from pathlib import Path
 import pytest
@@ -128,6 +129,7 @@ def test_update_issue_and_preserve_id_and_reported_at():
         "description": "Replaced fan unit; temperatures normalized",
         "priority": "Low",
         "status": "Resolved",
+        "assigned_engineer": "Alex Morgan",
     }
     update_res = client.put(f"/issues/{issue_id}", json=update_payload)
     assert update_res.status_code == 200
@@ -160,7 +162,9 @@ def test_status_changes():
     assert res_in_progress.json()["status"] == "In Progress"
 
     # Change to Resolved
-    res_resolved = client.put(f"/issues/{issue_id}", json={"status": "Resolved"})
+    res_resolved = client.put(f"/issues/{issue_id}", json={
+        "status": "Resolved", "assigned_engineer": "Sam Patel"
+    })
     assert res_resolved.status_code == 200
     assert res_resolved.json()["status"] == "Resolved"
 
@@ -173,6 +177,7 @@ def test_delete_issue():
         "description": "Build log has obsolete API flag",
         "priority": "Low",
         "status": "Resolved",
+        "assigned_engineer": "Jordan Lee",
     })
     issue_id = create_res.json()["id"]
 
@@ -260,6 +265,7 @@ def test_persistence_across_backend_restart(tmp_path):
         "description": "Middle-out algorithm dropped keyframe 42",
         "priority": "High",
         "status": "In Progress",
+        "assigned_engineer": "Sam Patel",
     })
     assert create_res.status_code == 201
     created_id = create_res.json()["id"]
@@ -282,3 +288,125 @@ def test_persistence_across_backend_restart(tmp_path):
     assert issue_data["priority"] == "High"
     assert issue_data["status"] == "In Progress"
     assert issue_data["reported_at"] == created_timestamp
+    assert issue_data["assigned_engineer"] == "Sam Patel"
+
+
+def assignment_payload(**overrides):
+    return {
+        "client_name": "Fictional Demo Client",
+        "title": "Assignment regression",
+        "description": "Fictional issue for assignment checks",
+        "priority": "High",
+        "status": "Open",
+        **overrides,
+    }
+
+
+def test_engineer_choices_and_assigned_issue_round_trip():
+    client = get_client()
+    engineers = client.get("/engineers")
+    assert engineers.status_code == 200
+    assert engineers.json() == ["Alex Morgan", "Sam Patel", "Jordan Lee"]
+    response = client.post("/issues", json=assignment_payload(assigned_engineer="  Alex Morgan  "))
+    assert response.status_code == 201
+    created = response.json()
+    assert created["assigned_engineer"] == "Alex Morgan"
+    assert client.get(f"/issues/{created['id']}").json() == created
+    assert client.get("/issues").json() == [created]
+
+
+@pytest.mark.parametrize("engineer", [None, "", "   "])
+@pytest.mark.parametrize("issue_status", ["Open", "In Progress", "Resolved"])
+def test_unassigned_create_rules(engineer, issue_status):
+    client = get_client()
+    response = client.post("/issues", json=assignment_payload(
+        assigned_engineer=engineer, status=issue_status
+    ))
+    assert response.status_code == (422 if issue_status == "Resolved" else 201)
+    if issue_status == "Resolved":
+        assert client.get("/issues").json() == []
+    else:
+        assert response.json()["assigned_engineer"] is None
+
+
+def test_direct_api_cannot_resolve_without_engineer():
+    client = get_client()
+    assert client.post("/issues", json=assignment_payload(status="Resolved")).status_code == 422
+    created = client.post("/issues", json=assignment_payload()).json()
+    response = client.put(f"/issues/{created['id']}", json={"status": "resolved"})
+    assert response.status_code == 422
+    assert "Assigned Engineer" in response.json()["detail"]
+    assert client.get(f"/issues/{created['id']}").json() == created
+
+
+def test_assign_resolve_preserve_and_reassign():
+    client = get_client()
+    created = client.post("/issues", json=assignment_payload()).json()
+    url = f"/issues/{created['id']}"
+    assigned = client.put(url, json={"assigned_engineer": "Sam Patel"})
+    assert assigned.status_code == 200
+    resolved = client.put(url, json={"status": "Resolved"})
+    assert resolved.status_code == 200
+    assert resolved.json()["assigned_engineer"] == "Sam Patel"
+    assert resolved.json()["reported_at"] == created["reported_at"]
+    assert resolved.json()["id"] == created["id"]
+    reassigned = client.put(url, json={"assigned_engineer": "Jordan Lee", "title": "Updated"})
+    assert reassigned.status_code == 200
+    assert reassigned.json()["status"] == "Resolved"
+    assert reassigned.json()["assigned_engineer"] == "Jordan Lee"
+
+
+@pytest.mark.parametrize("empty_engineer", [None, "", "  "])
+def test_cannot_clear_assignment_while_resolved(empty_engineer):
+    client = get_client()
+    created = client.post("/issues", json=assignment_payload(
+        status="Resolved", assigned_engineer="Alex Morgan"
+    )).json()
+    url = f"/issues/{created['id']}"
+    response = client.put(url, json={"assigned_engineer": empty_engineer, "title": "Must not save"})
+    assert response.status_code == 422
+    assert client.get(url).json() == created
+    reopened = client.put(url, json={"status": "Open", "assigned_engineer": empty_engineer})
+    assert reopened.status_code == 200
+    assert reopened.json()["assigned_engineer"] is None
+
+
+@pytest.mark.parametrize("invalid_engineer", ["Unknown Person", 42])
+def test_invalid_engineer_is_rejected(invalid_engineer):
+    client = get_client()
+    assert client.post("/issues", json=assignment_payload(
+        assigned_engineer=invalid_engineer
+    )).status_code == 422
+    created = client.post("/issues", json=assignment_payload()).json()
+    assert client.put(f"/issues/{created['id']}", json={
+        "assigned_engineer": invalid_engineer
+    }).status_code == 422
+
+
+def test_legacy_database_migration_preserves_records_and_is_repeatable(tmp_path, monkeypatch):
+    import main as main_mod
+
+    legacy_db = tmp_path / "legacy.db"
+    timestamp = "2026-10-20T12:00:00+00:00"
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute("""CREATE TABLE issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, client_name TEXT NOT NULL,
+            title TEXT NOT NULL, description TEXT NOT NULL, priority TEXT NOT NULL,
+            status TEXT NOT NULL, reported_at TEXT NOT NULL
+        )""")
+        conn.execute("INSERT INTO issues VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (17, "Legacy Demo", "Old issue", "Keep this record", "High", "Open", timestamp))
+    monkeypatch.setattr(main_mod, "DB_PATH", str(legacy_db))
+    # Starting the application migrates the old table; starting again is safe.
+    with TestClient(main_mod.app) as client:
+        record = client.get("/issues/17").json()
+        assert record["id"] == 17
+        assert record["reported_at"] == timestamp
+        assert record["description"] == "Keep this record"
+        assert record["assigned_engineer"] is None
+        response = client.put("/issues/17", json={
+            "status": "Resolved", "assigned_engineer": "Alex Morgan"
+        })
+        assert response.status_code == 200
+    with TestClient(main_mod.app) as client:
+        assert client.get("/issues/17").json() == response.json()

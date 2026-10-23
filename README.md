@@ -22,6 +22,7 @@ A support issue tracking application built with a **FastAPI + SQLite** backend a
 | `priority` | TEXT | `Low`, `Medium`, or `High` |
 | `status` | TEXT | `Open`, `In Progress`, or `Resolved` |
 | `reported_at` | TEXT | Timezone-aware UTC timestamp (ISO 8601) |
+| `assigned_engineer` | TEXT, nullable | Selected fictional engineer, or null for Unassigned |
 
 ---
 
@@ -39,7 +40,8 @@ A support issue tracking application built with a **FastAPI + SQLite** backend a
    - Case-insensitive search across Client Name **OR** Issue Title.
    - Priority filter dropdown (`All`, `Low`, `Medium`, `High`).
    - Status filter dropdown (`All`, `Open`, `In Progress`, `Resolved`).
-   - Search and both filters work simultaneously.
+   - Assigned Engineer filter (`All Engineers`, `Unassigned`, or a named engineer).
+   - Search and all three filters work simultaneously; Reset Filters clears them all.
 4. **Overdue Highlighting**:
    - Automatically highlights tickets with a red accent and an `Overdue` badge when:
      - `priority === 'High'`
@@ -47,6 +49,16 @@ A support issue tracking application built with a **FastAPI + SQLite** backend a
      - `reported_at` is strictly more than 24 hours ago.
 5. **Local Timezone Display**:
    - Formats UTC ISO timestamps into the user's local date and time string, with the exact UTC timestamp accessible in tooltips.
+6. **Engineer Assignment**:
+   - Select an engineer when creating or editing an issue; the list displays the selection.
+   - Open and In Progress issues may remain Unassigned.
+   - Resolved requires an Assigned Engineer. Both the form and backend enforce this rule.
+   - Clearing assignment from a Resolved issue is rejected unless the same update reopens it.
+   - `GET /engineers` supplies the fictional roster: Alex Morgan, Sam Patel and Jordan Lee. Edit `ENGINEERS` in `backend/main.py` to change the demo choices.
+
+### Existing databases
+
+Backend startup automatically adds the nullable assignment column to older databases without deleting or changing issue IDs, timestamps or other fields. Restart the backend after updating the code. Existing records appear as Unassigned. Historical Resolved records retain their status; the next edit must assign an engineer or reopen the issue. Repeated startup is safe.
 
 ---
 
@@ -56,7 +68,9 @@ A support issue tracking application built with a **FastAPI + SQLite** backend a
 
 ```bash
 cd backend
+python3 -m venv venv
 source venv/bin/activate
+python -m pip install -r requirements.txt
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 - Interactive API Docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
@@ -70,3 +84,34 @@ npm install
 npm run dev
 ```
 - Open in browser: [http://localhost:5173](http://localhost:5173)
+
+## Testing the assignment change
+
+From the project root, using the installed backend virtual environment:
+
+```bash
+backend/venv/bin/python -m pytest backend/test_main.py -q
+npm --prefix frontend run build
+npm --prefix frontend run lint
+```
+
+The backend tests cover CRUD, input validation, stable IDs/timestamps, assignment persistence, invalid engineer choices, resolution without assignment, rejected assignment removal, reopening, and migration from the previous database schema. All tests use temporary databases.
+
+Browser regression checklist:
+
+1. Create an Open issue without an engineer; verify Unassigned in its row.
+2. Edit it, select an engineer, select Resolved and save; verify both values after refresh.
+3. Clear the engineer while leaving status Resolved; verify the error and unchanged saved issue. Reopen it and then verify clearing assignment succeeds.
+4. Combine engineer, priority and status filters with a client/title search; verify Reset Filters restores all issues. Check the Unassigned filter too.
+5. Verify overdue highlighting still requires High priority, unresolved status and an age strictly greater than 24 hours.
+6. Verify required-field errors, editing, delete cancellation/confirmation, loading/error/retry states and small-screen layout.
+
+SQLite remains the persistent source of data. No engineer accounts or login are required for this fictional demonstration.
+
+### Verification results for the assignment change
+
+- Backend: 27 tests passed, including the original CRUD tests updated to supply an engineer when resolving.
+- Frontend production build: passed.
+- Browser: passed checks for creation, assignment, resolution, blocked assignment removal, reopening, combined filters/search, reset, refresh persistence, unchanged timestamp, overdue highlighting, required fields, delete cancellation/confirmation, narrow-screen layout, and backend failure/retry.
+- Browser checks used a separate fictional database and backend on port 8011, with the test browser routing API requests there. Existing app data and the running backend on port 8000 were not modified.
+- Lint: completed with two existing warnings about loadIssues initialization order and Date.now during rendering. No new lint warnings were introduced.
