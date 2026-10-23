@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import './App.css';
+import { isIssueOverdue, formatLocalTime } from './utils';
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -42,10 +43,15 @@ function App() {
       const data = await response.json();
       setIssues(data);
     } catch (err) {
-      setFetchError(err.message || 'Unable to connect to the backend server');
+      const msg =
+        err.message === 'Failed to fetch' || err.name === 'TypeError'
+          ? 'Unable to connect to backend server. Please verify that FastAPI is running on http://localhost:8000.'
+          : err.message || 'Unable to connect to backend server';
+      setFetchError(msg);
     } finally {
       setLoading(false);
     }
+
   };
 
   const handleStartEdit = (issue) => {
@@ -145,7 +151,11 @@ function App() {
       // Reload issues from backend
       await loadIssues();
     } catch (err) {
-      setFormError(err.message || 'Operation failed');
+      const msg =
+        err.message === 'Failed to fetch' || err.name === 'TypeError'
+          ? 'Unable to connect to backend server. Please verify that FastAPI is running.'
+          : err.message || 'Operation failed';
+      setFormError(msg);
     } finally {
       setSaving(false);
     }
@@ -185,42 +195,15 @@ function App() {
       // Refresh data
       await loadIssues();
     } catch (err) {
-      setActionError(err.message || 'Failed to delete issue');
+      const msg =
+        err.message === 'Failed to fetch' || err.name === 'TypeError'
+          ? 'Unable to connect to backend server. Please verify that FastAPI is running.'
+          : err.message || 'Failed to delete issue';
+      setActionError(msg);
     } finally {
       setDeletingId(null);
     }
-  };
 
-  // Check if issue is overdue:
-  // priority is High, status is not Resolved, and reported_at is strictly more than 24 hours ago
-  const isIssueOverdue = (issue) => {
-    if (issue.priority !== 'High' || issue.status === 'Resolved') {
-      return false;
-    }
-    if (!issue.reported_at) return false;
-    const reportedTime = new Date(issue.reported_at).getTime();
-    const currentTime = Date.now();
-    const differenceInMs = currentTime - reportedTime;
-    const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
-    return differenceInMs > twentyFourHoursInMs;
-  };
-
-  // Convert UTC ISO timestamp to user's local time string
-  const formatLocalTime = (isoString) => {
-    if (!isoString) return '—';
-    try {
-      const date = new Date(isoString);
-      if (isNaN(date.getTime())) return isoString;
-      return date.toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return isoString;
-    }
   };
 
   // Filter issues based on search, priority, and status
