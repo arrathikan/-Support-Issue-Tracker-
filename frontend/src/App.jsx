@@ -8,10 +8,13 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [formError, setFormError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
+  const [actionError, setActionError] = useState(null);
 
   // Form state
+  const [editingId, setEditingId] = useState(null);
   const [clientName, setClientName] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -40,10 +43,39 @@ function App() {
     }
   };
 
-  const handleCreateSubmit = async (e) => {
+  const handleStartEdit = (issue) => {
+    setEditingId(issue.id);
+    setClientName(issue.client_name);
+    setTitle(issue.title);
+    setDescription(issue.description);
+    setPriority(issue.priority);
+    setStatus(issue.status);
+    setFormError(null);
+    setSuccessMessage(null);
+    setActionError(null);
+
+    // Smooth scroll to form
+    const formEl = document.getElementById('issue-form-section');
+    if (formEl) {
+      formEl.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setClientName('');
+    setTitle('');
+    setDescription('');
+    setPriority('Medium');
+    setStatus('Open');
+    setFormError(null);
+  };
+
+  const handleFormSubmit = async (e) => {
     e.preventDefault();
     setFormError(null);
     setSuccessMessage(null);
+    setActionError(null);
 
     // Validate required fields (trimmed)
     const trimmedClientName = clientName.trim();
@@ -65,8 +97,14 @@ function App() {
 
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/issues`, {
-        method: 'POST',
+      const isEditing = editingId !== null;
+      const url = isEditing
+        ? `${API_BASE_URL}/issues/${editingId}`
+        : `${API_BASE_URL}/issues`;
+      const method = isEditing ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -86,24 +124,65 @@ function App() {
             ? errorData.detail
             : Array.isArray(errorData.detail)
             ? errorData.detail.map((d) => d.msg).join(', ')
-            : `Failed to create issue (HTTP ${response.status})`;
+            : `Failed to ${isEditing ? 'update' : 'create'} issue (HTTP ${response.status})`;
         throw new Error(detailMsg);
       }
 
-      // Reset form on success
-      setClientName('');
-      setTitle('');
-      setDescription('');
-      setPriority('Medium');
-      setStatus('Open');
-      setSuccessMessage('Issue created successfully!');
+      setSuccessMessage(
+        isEditing
+          ? `Issue #${editingId} updated successfully!`
+          : 'Issue created successfully!'
+      );
+
+      // Reset form
+      handleCancelEdit();
 
       // Reload issues from backend
       await loadIssues();
     } catch (err) {
-      setFormError(err.message || 'Failed to submit issue to backend');
+      setFormError(err.message || 'Operation failed');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteIssue = async (issue) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete issue #${issue.id} ("${issue.title}")?`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(issue.id);
+    setActionError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/issues/${issue.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const detailMsg =
+          typeof errorData.detail === 'string'
+            ? errorData.detail
+            : `Failed to delete issue #${issue.id} (HTTP ${response.status})`;
+        throw new Error(detailMsg);
+      }
+
+      setSuccessMessage(`Issue #${issue.id} deleted successfully.`);
+
+      // If user was editing this issue, reset form
+      if (editingId === issue.id) {
+        handleCancelEdit();
+      }
+
+      // Refresh data
+      await loadIssues();
+    } catch (err) {
+      setActionError(err.message || 'Failed to delete issue');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -115,9 +194,16 @@ function App() {
       </header>
 
       <main className="main-layout">
-        {/* Create Issue Card */}
-        <section className="card" aria-labelledby="form-heading">
-          <h2 id="form-heading" className="card-title">Log New Support Issue</h2>
+        {/* Issue Form Card */}
+        <section id="issue-form-section" className="card" aria-labelledby="form-heading">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h2 id="form-heading" className="card-title" style={{ margin: 0 }}>
+              {editingId !== null ? `Edit Issue #${editingId}` : 'Log New Support Issue'}
+            </h2>
+            {editingId !== null && (
+              <span className="badge badge-medium">Editing Mode</span>
+            )}
+          </div>
 
           {formError && (
             <div className="alert alert-error" role="alert">
@@ -147,7 +233,7 @@ function App() {
             </div>
           )}
 
-          <form onSubmit={handleCreateSubmit} className="issue-form" noValidate>
+          <form onSubmit={handleFormSubmit} className="issue-form" noValidate>
             <div className="form-grid">
               <div className="form-group">
                 <label htmlFor="client-name-input">Client Name *</label>
@@ -226,8 +312,24 @@ function App() {
                 className="btn btn-primary"
                 disabled={saving}
               >
-                {saving ? 'Saving Issue...' : 'Create Issue'}
+                {saving
+                  ? 'Saving Issue...'
+                  : editingId !== null
+                  ? 'Update Issue'
+                  : 'Create Issue'}
               </button>
+
+              {editingId !== null && (
+                <button
+                  id="cancel-edit-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleCancelEdit}
+                  disabled={saving}
+                >
+                  Cancel Edit
+                </button>
+              )}
             </div>
           </form>
         </section>
@@ -235,6 +337,20 @@ function App() {
         {/* Issue List Card */}
         <section className="card" aria-labelledby="list-heading">
           <h2 id="list-heading" className="card-title">Support Issues</h2>
+
+          {actionError && (
+            <div className="alert alert-error" role="alert">
+              <span>{actionError}</span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                onClick={() => setActionError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {loading && (
             <div className="state-message">
@@ -276,6 +392,7 @@ function App() {
                     <th>Priority</th>
                     <th>Status</th>
                     <th>Reported Time</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -298,6 +415,28 @@ function App() {
                         </span>
                       </td>
                       <td>{issue.reported_at}</td>
+                      <td>
+                        <div className="actions-cell">
+                          <button
+                            id={`edit-issue-${issue.id}-btn`}
+                            type="button"
+                            className="btn btn-edit"
+                            onClick={() => handleStartEdit(issue)}
+                            disabled={saving || deletingId === issue.id}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            id={`delete-issue-${issue.id}-btn`}
+                            type="button"
+                            className="btn btn-danger"
+                            onClick={() => handleDeleteIssue(issue)}
+                            disabled={saving || deletingId === issue.id}
+                          >
+                            {deletingId === issue.id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
