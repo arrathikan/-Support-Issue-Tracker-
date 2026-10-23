@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
 import './App.css';
-import { isIssueOverdue, formatLocalTime } from './utils';
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -21,11 +20,14 @@ function App() {
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('Medium');
   const [status, setStatus] = useState('Open');
+  const [assignedEngineer, setAssignedEngineer] = useState('');
+  const [engineers, setEngineers] = useState([]);
 
   // Search and filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [engineerFilter, setEngineerFilter] = useState('All');
 
   // Load issues when component mounts
   useEffect(() => {
@@ -36,22 +38,22 @@ function App() {
     setLoading(true);
     setFetchError(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/issues`);
-      if (!response.ok) {
-        throw new Error(`Failed to load issues (HTTP ${response.status})`);
+      const [response, engineersResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/issues`),
+        fetch(`${API_BASE_URL}/engineers`),
+      ]);
+      if (!response.ok || !engineersResponse.ok) {
+        throw new Error(`Failed to load issues or engineers (HTTP ${!response.ok ? response.status : engineersResponse.status})`);
       }
       const data = await response.json();
+      const engineerData = await engineersResponse.json();
       setIssues(data);
+      setEngineers(engineerData);
     } catch (err) {
-      const msg =
-        err.message === 'Failed to fetch' || err.name === 'TypeError'
-          ? 'Unable to connect to backend server. Please verify that FastAPI is running on http://localhost:8000.'
-          : err.message || 'Unable to connect to backend server';
-      setFetchError(msg);
+      setFetchError(err.message || 'Unable to connect to the backend server');
     } finally {
       setLoading(false);
     }
-
   };
 
   const handleStartEdit = (issue) => {
@@ -61,6 +63,7 @@ function App() {
     setDescription(issue.description);
     setPriority(issue.priority);
     setStatus(issue.status);
+    setAssignedEngineer(issue.assigned_engineer || '');
     setFormError(null);
     setSuccessMessage(null);
     setActionError(null);
@@ -79,6 +82,7 @@ function App() {
     setDescription('');
     setPriority('Medium');
     setStatus('Open');
+    setAssignedEngineer('');
     setFormError(null);
   };
 
@@ -105,6 +109,10 @@ function App() {
       setFormError('Description is required');
       return;
     }
+    if (status === 'Resolved' && !assignedEngineer) {
+      setFormError('Select an Assigned Engineer before marking an issue Resolved');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -125,6 +133,7 @@ function App() {
           description: trimmedDescription,
           priority,
           status,
+          assigned_engineer: assignedEngineer || null,
         }),
       });
 
@@ -151,11 +160,7 @@ function App() {
       // Reload issues from backend
       await loadIssues();
     } catch (err) {
-      const msg =
-        err.message === 'Failed to fetch' || err.name === 'TypeError'
-          ? 'Unable to connect to backend server. Please verify that FastAPI is running.'
-          : err.message || 'Operation failed';
-      setFormError(msg);
+      setFormError(err.message || 'Operation failed');
     } finally {
       setSaving(false);
     }
@@ -195,15 +200,42 @@ function App() {
       // Refresh data
       await loadIssues();
     } catch (err) {
-      const msg =
-        err.message === 'Failed to fetch' || err.name === 'TypeError'
-          ? 'Unable to connect to backend server. Please verify that FastAPI is running.'
-          : err.message || 'Failed to delete issue';
-      setActionError(msg);
+      setActionError(err.message || 'Failed to delete issue');
     } finally {
       setDeletingId(null);
     }
+  };
 
+  // Check if issue is overdue:
+  // priority is High, status is not Resolved, and reported_at is strictly more than 24 hours ago
+  const isIssueOverdue = (issue) => {
+    if (issue.priority !== 'High' || issue.status === 'Resolved') {
+      return false;
+    }
+    if (!issue.reported_at) return false;
+    const reportedTime = new Date(issue.reported_at).getTime();
+    const currentTime = Date.now();
+    const differenceInMs = currentTime - reportedTime;
+    const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
+    return differenceInMs > twentyFourHoursInMs;
+  };
+
+  // Convert UTC ISO timestamp to user's local time string
+  const formatLocalTime = (isoString) => {
+    if (!isoString) return '—';
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return isoString;
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return isoString;
+    }
   };
 
   // Filter issues based on search, priority, and status
@@ -225,14 +257,21 @@ function App() {
       const matchesStatus =
         statusFilter === 'All' || issue.status === statusFilter;
 
-      return matchesSearch && matchesPriority && matchesStatus;
+      const matchesEngineer =
+        engineerFilter === 'All' ||
+        (engineerFilter === 'Unassigned'
+          ? !issue.assigned_engineer
+          : issue.assigned_engineer === engineerFilter);
+
+      return matchesSearch && matchesPriority && matchesStatus && matchesEngineer;
     });
-  }, [issues, searchTerm, priorityFilter, statusFilter]);
+  }, [issues, searchTerm, priorityFilter, statusFilter, engineerFilter]);
 
   const handleResetFilters = () => {
     setSearchTerm('');
     setPriorityFilter('All');
     setStatusFilter('All');
+    setEngineerFilter('All');
   };
 
   return (
@@ -326,6 +365,24 @@ function App() {
               </div>
 
               <div className="form-group">
+                <label htmlFor="assigned-engineer-select">Assigned Engineer</label>
+                <select
+                  id="assigned-engineer-select"
+                  className="form-control"
+                  value={assignedEngineer}
+                  onChange={(e) => setAssignedEngineer(e.target.value)}
+                  disabled={saving}
+                  aria-describedby="engineer-help"
+                >
+                  <option value="">Unassigned</option>
+                  {engineers.map((engineer) => (
+                    <option key={engineer} value={engineer}>{engineer}</option>
+                  ))}
+                </select>
+                <small id="engineer-help">Required before an issue can be Resolved.</small>
+              </div>
+
+              <div className="form-group">
                 <label htmlFor="status-select">Status</label>
                 <select
                   id="status-select"
@@ -336,7 +393,7 @@ function App() {
                 >
                   <option value="Open">Open</option>
                   <option value="In Progress">In Progress</option>
-                  <option value="Resolved">Resolved</option>
+                  <option value="Resolved" disabled={!assignedEngineer}>Resolved</option>
                 </select>
               </div>
 
@@ -447,6 +504,22 @@ function App() {
               </div>
 
               <div className="filter-group">
+                <label htmlFor="filter-engineer-select">Filter by Assigned Engineer</label>
+                <select
+                  id="filter-engineer-select"
+                  className="form-control"
+                  value={engineerFilter}
+                  onChange={(e) => setEngineerFilter(e.target.value)}
+                >
+                  <option value="All">All Engineers</option>
+                  <option value="Unassigned">Unassigned</option>
+                  {engineers.map((engineer) => (
+                    <option key={engineer} value={engineer}>{engineer}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="filter-group">
                 <button
                   id="reset-filters-btn"
                   type="button"
@@ -462,7 +535,7 @@ function App() {
               <span>
                 Showing {filteredIssues.length} of {issues.length} total issues
               </span>
-              {(searchTerm || priorityFilter !== 'All' || statusFilter !== 'All') && (
+              {(searchTerm || priorityFilter !== 'All' || statusFilter !== 'All' || engineerFilter !== 'All') && (
                 <span>Filters Active</span>
               )}
             </div>
@@ -513,6 +586,7 @@ function App() {
                     <th>Description</th>
                     <th>Priority</th>
                     <th>Status</th>
+                    <th>Assigned Engineer</th>
                     <th>Reported Time</th>
                     <th>Actions</th>
                   </tr>
@@ -549,6 +623,7 @@ function App() {
                             )}
                           </div>
                         </td>
+                        <td>{issue.assigned_engineer || 'Unassigned'}</td>
                         <td className="time-cell" title={`UTC: ${issue.reported_at}`}>
                           <div>{formatLocalTime(issue.reported_at)}</div>
                           <span className="time-utc-tooltip">UTC: {issue.reported_at.slice(0, 19).replace('T', ' ')}</span>

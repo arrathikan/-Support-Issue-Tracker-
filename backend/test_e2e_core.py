@@ -81,10 +81,14 @@ def test_core_lifecycle_and_persistence(isolated_db):
     assert updated["reported_at"] == original_reported_at  # UNCHANGED!
     assert updated["status"] == "In Progress"
 
-    # 5. Status transitions: In Progress -> Resolved
-    resolve_res = client_restarted.put(f"/issues/{issue_id}", json={"status": "Resolved"})
+    # 5. Status transitions: In Progress -> Resolved (requires assigned engineer)
+    resolve_res = client_restarted.put(
+        f"/issues/{issue_id}",
+        json={"status": "Resolved", "assigned_engineer": "Alex Morgan"}
+    )
     assert resolve_res.status_code == 200
     assert resolve_res.json()["status"] == "Resolved"
+    assert resolve_res.json()["assigned_engineer"] == "Alex Morgan"
     assert resolve_res.json()["reported_at"] == original_reported_at
 
     # 6. Deletion
