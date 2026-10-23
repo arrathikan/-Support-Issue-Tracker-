@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import './App.css';
 
 const API_BASE_URL = 'http://localhost:8000';
@@ -20,6 +20,11 @@ function App() {
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('Medium');
   const [status, setStatus] = useState('Open');
+
+  // Search and filter state
+  const [searchTerm, setSearchTerm] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All');
 
   // Load issues when component mounts
   useEffect(() => {
@@ -184,6 +189,67 @@ function App() {
     } finally {
       setDeletingId(null);
     }
+  };
+
+  // Check if issue is overdue:
+  // priority is High, status is not Resolved, and reported_at is strictly more than 24 hours ago
+  const isIssueOverdue = (issue) => {
+    if (issue.priority !== 'High' || issue.status === 'Resolved') {
+      return false;
+    }
+    if (!issue.reported_at) return false;
+    const reportedTime = new Date(issue.reported_at).getTime();
+    const currentTime = Date.now();
+    const differenceInMs = currentTime - reportedTime;
+    const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
+    return differenceInMs > twentyFourHoursInMs;
+  };
+
+  // Convert UTC ISO timestamp to user's local time string
+  const formatLocalTime = (isoString) => {
+    if (!isoString) return '—';
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return isoString;
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return isoString;
+    }
+  };
+
+  // Filter issues based on search, priority, and status
+  const filteredIssues = useMemo(() => {
+    const searchLower = searchTerm.trim().toLowerCase();
+
+    return issues.filter((issue) => {
+      // Search: case-insensitive match for client_name OR title
+      const matchesSearch =
+        !searchLower ||
+        issue.client_name.toLowerCase().includes(searchLower) ||
+        issue.title.toLowerCase().includes(searchLower);
+
+      // Priority filter with "All" option
+      const matchesPriority =
+        priorityFilter === 'All' || issue.priority === priorityFilter;
+
+      // Status filter with "All" option
+      const matchesStatus =
+        statusFilter === 'All' || issue.status === statusFilter;
+
+      return matchesSearch && matchesPriority && matchesStatus;
+    });
+  }, [issues, searchTerm, priorityFilter, statusFilter]);
+
+  const handleResetFilters = () => {
+    setSearchTerm('');
+    setPriorityFilter('All');
+    setStatusFilter('All');
   };
 
   return (
@@ -352,6 +418,73 @@ function App() {
             </div>
           )}
 
+          {/* Search and Filters Bar */}
+          <div className="filter-card">
+            <div className="filter-grid">
+              <div className="filter-group">
+                <label htmlFor="search-input">Search Client or Title</label>
+                <input
+                  id="search-input"
+                  type="text"
+                  className="form-control"
+                  placeholder="Search by client name or title..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="filter-priority-select">Filter by Priority</label>
+                <select
+                  id="filter-priority-select"
+                  className="form-control"
+                  value={priorityFilter}
+                  onChange={(e) => setPriorityFilter(e.target.value)}
+                >
+                  <option value="All">All Priorities</option>
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="filter-status-select">Filter by Status</label>
+                <select
+                  id="filter-status-select"
+                  className="form-control"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  <option value="All">All Statuses</option>
+                  <option value="Open">Open</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Resolved">Resolved</option>
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <button
+                  id="reset-filters-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleResetFilters}
+                >
+                  Reset Filters
+                </button>
+              </div>
+            </div>
+
+            <div className="filter-info">
+              <span>
+                Showing {filteredIssues.length} of {issues.length} total issues
+              </span>
+              {(searchTerm || priorityFilter !== 'All' || statusFilter !== 'All') && (
+                <span>Filters Active</span>
+              )}
+            </div>
+          </div>
+
           {loading && (
             <div className="state-message">
               <p>Loading issues from backend...</p>
@@ -380,7 +513,13 @@ function App() {
             </div>
           )}
 
-          {!loading && !fetchError && issues.length > 0 && (
+          {!loading && !fetchError && issues.length > 0 && filteredIssues.length === 0 && (
+            <div className="state-message">
+              <p>No issues match the search and filter criteria.</p>
+            </div>
+          )}
+
+          {!loading && !fetchError && filteredIssues.length > 0 && (
             <div className="table-wrapper">
               <table className="issue-table">
                 <thead>
@@ -396,49 +535,66 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {issues.map((issue) => (
-                    <tr key={issue.id}>
-                      <td>#{issue.id}</td>
-                      <td><strong>{issue.client_name}</strong></td>
-                      <td>{issue.title}</td>
-                      <td>{issue.description}</td>
-                      <td>
-                        <span className={`badge badge-${issue.priority.toLowerCase()}`}>
-                          {issue.priority}
-                        </span>
-                      </td>
-                      <td>
-                        <span
-                          className={`badge badge-${issue.status.toLowerCase().replace(/\s+/g, '-')}`}
-                        >
-                          {issue.status}
-                        </span>
-                      </td>
-                      <td>{issue.reported_at}</td>
-                      <td>
-                        <div className="actions-cell">
-                          <button
-                            id={`edit-issue-${issue.id}-btn`}
-                            type="button"
-                            className="btn btn-edit"
-                            onClick={() => handleStartEdit(issue)}
-                            disabled={saving || deletingId === issue.id}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            id={`delete-issue-${issue.id}-btn`}
-                            type="button"
-                            className="btn btn-danger"
-                            onClick={() => handleDeleteIssue(issue)}
-                            disabled={saving || deletingId === issue.id}
-                          >
-                            {deletingId === issue.id ? 'Deleting...' : 'Delete'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredIssues.map((issue) => {
+                    const overdue = isIssueOverdue(issue);
+
+                    return (
+                      <tr
+                        key={issue.id}
+                        className={overdue ? 'row-overdue' : ''}
+                      >
+                        <td>#{issue.id}</td>
+                        <td><strong>{issue.client_name}</strong></td>
+                        <td>{issue.title}</td>
+                        <td>{issue.description}</td>
+                        <td>
+                          <span className={`badge badge-${issue.priority.toLowerCase()}`}>
+                            {issue.priority}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="status-badges">
+                            <span
+                              className={`badge badge-${issue.status.toLowerCase().replace(/\s+/g, '-')}`}
+                            >
+                              {issue.status}
+                            </span>
+                            {overdue && (
+                              <span className="badge badge-overdue">
+                                Overdue
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="time-cell" title={`UTC: ${issue.reported_at}`}>
+                          <div>{formatLocalTime(issue.reported_at)}</div>
+                          <span className="time-utc-tooltip">UTC: {issue.reported_at.slice(0, 19).replace('T', ' ')}</span>
+                        </td>
+                        <td>
+                          <div className="actions-cell">
+                            <button
+                              id={`edit-issue-${issue.id}-btn`}
+                              type="button"
+                              className="btn btn-edit"
+                              onClick={() => handleStartEdit(issue)}
+                              disabled={saving || deletingId === issue.id}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              id={`delete-issue-${issue.id}-btn`}
+                              type="button"
+                              className="btn btn-danger"
+                              onClick={() => handleDeleteIssue(issue)}
+                              disabled={saving || deletingId === issue.id}
+                            >
+                              {deletingId === issue.id ? 'Deleting...' : 'Delete'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
