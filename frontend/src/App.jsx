@@ -1,0 +1,313 @@
+import { useState, useEffect } from 'react';
+import './App.css';
+
+const API_BASE_URL = 'http://localhost:8000';
+
+function App() {
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
+
+  // Form state
+  const [clientName, setClientName] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [priority, setPriority] = useState('Medium');
+  const [status, setStatus] = useState('Open');
+
+  // Load issues when component mounts
+  useEffect(() => {
+    loadIssues();
+  }, []);
+
+  const loadIssues = async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/issues`);
+      if (!response.ok) {
+        throw new Error(`Failed to load issues (HTTP ${response.status})`);
+      }
+      const data = await response.json();
+      setIssues(data);
+    } catch (err) {
+      setFetchError(err.message || 'Unable to connect to the backend server');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateSubmit = async (e) => {
+    e.preventDefault();
+    setFormError(null);
+    setSuccessMessage(null);
+
+    // Validate required fields (trimmed)
+    const trimmedClientName = clientName.trim();
+    const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+
+    if (!trimmedClientName) {
+      setFormError('Client Name is required');
+      return;
+    }
+    if (!trimmedTitle) {
+      setFormError('Issue Title is required');
+      return;
+    }
+    if (!trimmedDescription) {
+      setFormError('Description is required');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/issues`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_name: trimmedClientName,
+          title: trimmedTitle,
+          description: trimmedDescription,
+          priority,
+          status,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const detailMsg =
+          typeof errorData.detail === 'string'
+            ? errorData.detail
+            : Array.isArray(errorData.detail)
+            ? errorData.detail.map((d) => d.msg).join(', ')
+            : `Failed to create issue (HTTP ${response.status})`;
+        throw new Error(detailMsg);
+      }
+
+      // Reset form on success
+      setClientName('');
+      setTitle('');
+      setDescription('');
+      setPriority('Medium');
+      setStatus('Open');
+      setSuccessMessage('Issue created successfully!');
+
+      // Reload issues from backend
+      await loadIssues();
+    } catch (err) {
+      setFormError(err.message || 'Failed to submit issue to backend');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="app-container">
+      <header className="app-header">
+        <h1>Support Issue Tracker</h1>
+        <p>Log, monitor, and resolve client support tickets</p>
+      </header>
+
+      <main className="main-layout">
+        {/* Create Issue Card */}
+        <section className="card" aria-labelledby="form-heading">
+          <h2 id="form-heading" className="card-title">Log New Support Issue</h2>
+
+          {formError && (
+            <div className="alert alert-error" role="alert">
+              <span>{formError}</span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                onClick={() => setFormError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {successMessage && (
+            <div className="alert alert-success" role="status">
+              <span>{successMessage}</span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                onClick={() => setSuccessMessage(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <form onSubmit={handleCreateSubmit} className="issue-form" noValidate>
+            <div className="form-grid">
+              <div className="form-group">
+                <label htmlFor="client-name-input">Client Name *</label>
+                <input
+                  id="client-name-input"
+                  type="text"
+                  className="form-control"
+                  placeholder="e.g. Acme Corp"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="issue-title-input">Issue Title *</label>
+                <input
+                  id="issue-title-input"
+                  type="text"
+                  className="form-control"
+                  placeholder="e.g. Database connection timeout"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="priority-select">Priority</label>
+                <select
+                  id="priority-select"
+                  className="form-control"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="status-select">Status</label>
+                <select
+                  id="status-select"
+                  className="form-control"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="Open">Open</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Resolved">Resolved</option>
+                </select>
+              </div>
+
+              <div className="form-group full-width">
+                <label htmlFor="description-input">Description *</label>
+                <textarea
+                  id="description-input"
+                  className="form-control"
+                  rows={3}
+                  placeholder="Detailed description of the issue..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+            </div>
+
+            <div className="form-actions">
+              <button
+                id="submit-issue-btn"
+                type="submit"
+                className="btn btn-primary"
+                disabled={saving}
+              >
+                {saving ? 'Saving Issue...' : 'Create Issue'}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        {/* Issue List Card */}
+        <section className="card" aria-labelledby="list-heading">
+          <h2 id="list-heading" className="card-title">Support Issues</h2>
+
+          {loading && (
+            <div className="state-message">
+              <p>Loading issues from backend...</p>
+            </div>
+          )}
+
+          {fetchError && !loading && (
+            <div className="alert alert-error" role="alert">
+              <div>
+                <strong>Error: </strong> {fetchError}
+              </div>
+              <button
+                id="retry-fetch-btn"
+                type="button"
+                className="btn btn-secondary"
+                onClick={loadIssues}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {!loading && !fetchError && issues.length === 0 && (
+            <div className="state-message">
+              <p>No issues found. Create a new issue to get started.</p>
+            </div>
+          )}
+
+          {!loading && !fetchError && issues.length > 0 && (
+            <div className="table-wrapper">
+              <table className="issue-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Client Name</th>
+                    <th>Title</th>
+                    <th>Description</th>
+                    <th>Priority</th>
+                    <th>Status</th>
+                    <th>Reported Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {issues.map((issue) => (
+                    <tr key={issue.id}>
+                      <td>#{issue.id}</td>
+                      <td><strong>{issue.client_name}</strong></td>
+                      <td>{issue.title}</td>
+                      <td>{issue.description}</td>
+                      <td>
+                        <span className={`badge badge-${issue.priority.toLowerCase()}`}>
+                          {issue.priority}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className={`badge badge-${issue.status.toLowerCase().replace(/\s+/g, '-')}`}
+                        >
+                          {issue.status}
+                        </span>
+                      </td>
+                      <td>{issue.reported_at}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+export default App;
